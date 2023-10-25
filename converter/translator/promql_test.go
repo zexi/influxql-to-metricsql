@@ -1,0 +1,170 @@
+package translator
+
+import (
+	"reflect"
+	"testing"
+
+	"github.com/influxdata/influxql"
+	"github.com/influxdata/promql/v2/pkg/labels"
+)
+
+func Test_metricsQL_getMetricName(t *testing.T) {
+	tests := []struct {
+		sql     string
+		want    string
+		wantErr bool
+	}{
+		{
+			sql:     `SELECT mean(usage) FROM "cpu" WHERE hostname = 'office-hq'`,
+			want:    "cpu_usage",
+			wantErr: false,
+		},
+		{
+			sql:     `SELECT free from disk`,
+			want:    "disk_free",
+			wantErr: false,
+		},
+		{
+			sql:     `SELECT * from disk`,
+			want:    "",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			q, err := influxql.ParseStatement(tt.sql)
+			if err != nil {
+				t.Errorf("influxql.ParserQuery(%q): %v", tt.sql, err)
+				return
+			}
+			sq, ok := q.(*influxql.SelectStatement)
+			if !ok {
+				t.Errorf("can't cast %#v to *influxql.SelectStatement", q)
+				return
+			}
+			got, err := getMetricName(sq.Sources, sq.Fields)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("getMetricName() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("getMetricName() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLabelsVisitor_Visit(t *testing.T) {
+	nMatcher := func(t labels.MatchType, n string, k string) *labels.Matcher {
+		l, _ := labels.NewMatcher(t, n, k)
+		return l
+	}
+	tests := []struct {
+		expr    string
+		want    []*labels.Matcher
+		wantErr bool
+	}{
+		{
+			expr: `host = 'server01'`,
+			want: []*labels.Matcher{
+				nMatcher(labels.MatchEqual, "host", "server01"),
+			},
+		},
+		{
+			expr: `host != 'server01'`,
+			want: []*labels.Matcher{
+				nMatcher(labels.MatchNotEqual, "host", "server01"),
+			},
+		},
+		{
+			expr: `hostname =~ /regexp/`,
+			want: []*labels.Matcher{
+				nMatcher(labels.MatchRegexp, "hostname", "regexp"),
+			},
+		},
+		{
+			expr: `hostname !~ /regexp/`,
+			want: []*labels.Matcher{
+				nMatcher(labels.MatchNotRegexp, "hostname", "regexp"),
+			},
+		},
+		{
+			expr: `hostname = 'office01' AND region =~ /uswest.*/`,
+			want: []*labels.Matcher{
+				nMatcher(labels.MatchEqual, "hostname", "office01"),
+				nMatcher(labels.MatchRegexp, "region", "uswest.*"),
+			},
+		},
+		{
+			expr:    `hostname = 'office01' or region =~ /uswest.*/`,
+			want:    nil,
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.expr, func(t *testing.T) {
+			l := NewLabelsVisitor()
+			expr, err := influxql.ParseExpr(tt.expr)
+			if err != nil {
+				t.Errorf("ParseExpr %q, error: %v", tt.expr, err)
+				return
+			}
+			influxql.Walk(l, expr)
+			if tt.wantErr {
+				if l.Error() == nil {
+					t.Errorf("no error happened, got: %v", l.Labels())
+				}
+			} else {
+				if got := l.labels; !reflect.DeepEqual(got, tt.want) {
+					t.Errorf("After Visited labels = %v, want %v, error: %v", got, tt.want, l.Error())
+				}
+			}
+		})
+	}
+}
+
+func Test_metricsQL_Translate(t *testing.T) {
+	tests := []struct {
+		sql     string
+		want    string
+		wantErr bool
+	}{
+		{
+			sql:     `SELECT free FROM "disk" WHERE host = 'ceph-04-192-168-222-114' AND path = '/opt/cloud'`,
+			want:    `disk_free{host="ceph-04-192-168-222-114",path="/opt/cloud"}`,
+			wantErr: false,
+		},
+		{
+			sql:     `SELECT mean("in") FROM "swap" WHERE host =~ /$hostname$/ GROUP BY time(2d), host`,
+			want:    `avg by(host) (avg_over_time(swap_in{host=~"$hostname$"}[2d]))`,
+			wantErr: false,
+		},
+		{
+			sql:     `SELECT last("uptime") FROM "system" WHERE time > now() - 3m GROUP BY *, time(1m) fill(none)`,
+			want:    `last_over_time(system_uptime[1m])`,
+			wantErr: false,
+		},
+		{
+			sql:  `SELECT mean("usage_active") FROM "cpu" WHERE "res_type" = 'host' AND time > now() - 1h GROUP BY "host_id"`,
+			want: `avg by(host_id) (avg_over_time(cpu_usage_active{res_type="host"}[1m]))`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.sql, func(t *testing.T) {
+			m := NewPromQL()
+			s, err := influxql.ParseStatement(tt.sql)
+			if err != nil {
+				t.Errorf("ParseStatement(%q) error = %v", tt.sql, err)
+				return
+			}
+			got, err := m.Translate(s)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Translate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("Translate() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
