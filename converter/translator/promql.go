@@ -13,16 +13,15 @@ import (
 )
 
 type promQL struct {
-	startTime       string
-	endTime         string
 	groupByWildcard bool
+	timeRange       *influxql.TimeRange
 }
 
 func NewPromQL() Translator {
 	return &promQL{}
 }
 
-func (m promQL) Translate(s influxql.Statement) (string, error) {
+func (m *promQL) Translate(s influxql.Statement) (string, error) {
 	selectS, ok := s.(*influxql.SelectStatement)
 	if !ok {
 		return "", errors.Errorf("Only SelectStatement is supported, input %t", s)
@@ -30,7 +29,11 @@ func (m promQL) Translate(s influxql.Statement) (string, error) {
 	return m.translate(selectS)
 }
 
-func (m promQL) translate(s *influxql.SelectStatement) (string, error) {
+func (m *promQL) GetTimeRange() *influxql.TimeRange {
+	return m.timeRange
+}
+
+func (m *promQL) translate(s *influxql.SelectStatement) (string, error) {
 	metricName, err := getMetricName(s.Sources, s.Fields)
 	if err != nil {
 		return "", errors.Wrap(err, "getMetricName")
@@ -39,11 +42,14 @@ func (m promQL) translate(s *influxql.SelectStatement) (string, error) {
 	if err != nil {
 		return "", errors.Wrap(err, "get aggregate operator")
 	}
-	//interval, err := s.GroupByInterval()
-	//if err != nil {
-	//	return "", errors.Wrap(err, "GroupByInterval")
-	//}
-	matchers, err := m.getLabels(s.Condition)
+	cond, timeRange, err := getTimeRange(s.Condition)
+	if err != nil {
+		return "", errors.Wrap(err, "getTimeRange")
+	}
+	//fmt.Printf("=====get time range: %s\n", timeRange)
+	m.timeRange = timeRange
+
+	matchers, err := m.getLabels(cond)
 	if err != nil {
 		return "", errors.Wrap(err, "get matchers")
 	}
@@ -54,8 +60,34 @@ func (m promQL) translate(s *influxql.SelectStatement) (string, error) {
 	if err != nil {
 		return "", errors.Wrap(err, "get groups")
 	}
+	//interval, err := s.GroupByInterval()
+	//if err != nil {
+	//	return "", errors.Wrap(err, "GroupByInterval")
+	//}
+	//fmt.Printf("==get interval: %#v\n", interval)
 
 	return m.formatExpression(metricName, matchers, lookbehindWin, aggrOp, groups)
+}
+
+func getTimeRange(cond influxql.Expr) (influxql.Expr, *influxql.TimeRange, error) {
+	// parse time range
+	//mustParseTime := func(value string) time.Time {
+	//	ts, err := time.Parse(time.RFC3339, value)
+	//	if err != nil {
+	//		panic(fmt.Errorf("unable to parse time: %s", err))
+	//	}
+	//	return ts
+	//}
+	//now := mustParseTime("2000-01-01T00:00:00Z")
+	valuer := influxql.NowValuer{Now: time.Now()}
+	cond, timeRange, err := influxql.ConditionExpr(cond, &valuer)
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "parse time range from %q", cond)
+	}
+	if timeRange.IsZero() {
+		return cond, nil, nil
+	}
+	return cond, &timeRange, nil
 }
 
 func (m promQL) formatExpression(
@@ -64,7 +96,7 @@ func (m promQL) formatExpression(
 	lookbehindWindow string,
 	aggrOp string,
 	groups []string) (string, error) {
-	fmt.Printf("=====name: %s, labels: %#v, lookbehindWindow: %q, aggrOp: %q, groups: %#v\n", metricName, ls, lookbehindWindow, aggrOp, groups)
+	//fmt.Printf("=====name: %s, labels: %#v, lookbehindWindow: %q, aggrOp: %q, groups: %#v\n", metricName, ls, lookbehindWindow, aggrOp, groups)
 
 	var result promql.Expr
 	if aggrOp != "" {
@@ -120,7 +152,7 @@ func (m promQL) formatExpression(
 		result = expr
 	}
 
-	fmt.Printf("=====m.GroupByWildcard: %v, %#v\n", m.groupByWildcard, result)
+	//fmt.Printf("=====m.GroupByWildcard: %v, %#v\n", m.groupByWildcard, result)
 
 	if len(groups) != 0 && !m.groupByWildcard {
 		expr := &promql.AggregateExpr{
@@ -200,7 +232,7 @@ type labelsVisitor struct {
 	curVal string
 }
 
-func NewLabelsVisitor() *labelsVisitor {
+func newLabelsVisitor() *labelsVisitor {
 	return &labelsVisitor{
 		err:    nil,
 		labels: make([]*labels.Matcher, 0),
@@ -246,7 +278,7 @@ func (l *labelsVisitor) commitLabel() error {
 }
 
 func (l *labelsVisitor) Visit(node influxql.Node) influxql.Visitor {
-	// fmt.Printf("-- visit: %#v\n", node)
+	//fmt.Printf("-- visit: %#v\n", node)
 	if l.err != nil {
 		log.Printf("error happend: %v, visting skipped", l.err)
 		return l
@@ -278,7 +310,7 @@ func (m promQL) getLabels(cond influxql.Expr) ([]*labels.Matcher, error) {
 	if cond == nil {
 		return nil, nil
 	}
-	v := NewLabelsVisitor()
+	v := newLabelsVisitor()
 	influxql.Walk(v, cond)
 	return v.Labels(), v.Error()
 }
@@ -304,7 +336,7 @@ func (m *promQL) getGroups(groups influxql.Dimensions) (string, []string, error)
 }
 
 func (m *promQL) getGroup(group *influxql.Dimension) (string, string, error) {
-	fmt.Printf("---try group: %#v\n", group)
+	//fmt.Printf("---try group: %#v\n", group)
 	grp := group.Expr
 	lookbehindWindow := ""
 	switch expr := grp.(type) {

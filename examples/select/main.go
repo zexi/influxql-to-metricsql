@@ -20,4 +20,17 @@ func main() {
 		fmt.Printf("===========\n")
 		fmt.Printf("%s\n%s\n", sql, promQL)
 	}
+
+	sqlTimes := []string{
+		`SELECT free FROM "disk" WHERE host = 'ceph-04-192-168-222-114' AND path = '/opt/cloud' AND time > now() - 1h`,
+		`SELECT free FROM "disk" WHERE host = 'ceph-04-192-168-222-114' AND path = '/opt/cloud' AND time >= 1698163200000ms and time <= 1698335999000ms`,
+	}
+	for _, sql := range sqlTimes {
+		promQL, tr, err := converter.TranslatorWithTimeRange(sql)
+		if err != nil {
+			panic(fmt.Errorf("Translate: %q , error: %v", sql, err))
+		}
+		fmt.Printf("===========\n")
+		fmt.Printf("%s\n%s, time range: %#v\n", sql, promQL, tr)
+	}
 }

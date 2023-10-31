@@ -3,6 +3,7 @@ package translator
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/influxdata/influxql"
 	"github.com/influxdata/promql/v2/pkg/labels"
@@ -103,7 +104,7 @@ func TestLabelsVisitor_Visit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.expr, func(t *testing.T) {
-			l := NewLabelsVisitor()
+			l := newLabelsVisitor()
 			expr, err := influxql.ParseExpr(tt.expr)
 			if err != nil {
 				t.Errorf("ParseExpr %q, error: %v", tt.expr, err)
@@ -129,6 +130,11 @@ func Test_metricsQL_Translate(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
+		{
+			sql:     "select free from disk",
+			want:    `disk_free`,
+			wantErr: false,
+		},
 		{
 			sql:     `SELECT free FROM "disk" WHERE host = 'ceph-04-192-168-222-114' AND path = '/opt/cloud'`,
 			want:    `disk_free{host="ceph-04-192-168-222-114",path="/opt/cloud"}`,
@@ -164,6 +170,42 @@ func Test_metricsQL_Translate(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("Translate() got = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func Test_getTimeRange(t *testing.T) {
+	start, _ := time.Parse(time.RFC3339, "2023-10-24T16:00:00Z")
+	end, _ := time.Parse(time.RFC3339, "2023-10-26T15:59:59Z")
+	tests := []struct {
+		cond    string
+		want    influxql.TimeRange
+		wantErr bool
+	}{
+		{
+			cond: `time >= 1698163200000ms and time <= 1698335999000ms`,
+			want: influxql.TimeRange{
+				Min: start,
+				Max: end,
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cond, func(t *testing.T) {
+			cond, err := influxql.ParseExpr(tt.cond)
+			if err != nil {
+				t.Fatalf("parseExpr %q: %v", tt.cond, err)
+				return
+			}
+			_, got, err := getTimeRange(cond)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("getTimeRange() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(*got, tt.want) {
+				t.Errorf("getTimeRange() got = %v, want %v", got, tt.want)
 			}
 		})
 	}

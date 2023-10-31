@@ -12,6 +12,7 @@ import (
 
 type Converter interface {
 	Translate() (string, error)
+	TranslateWithTimeRange() (string, *influxql.TimeRange, error)
 }
 
 type converter struct {
@@ -21,6 +22,10 @@ type converter struct {
 
 func Translate(influxQL string) (string, error) {
 	return New(strings.NewReader(influxQL)).Translate()
+}
+
+func TranslatorWithTimeRange(influxQL string) (string, *influxql.TimeRange, error) {
+	return New(strings.NewReader(influxQL)).TranslateWithTimeRange()
 }
 
 func New(r io.Reader) Converter {
@@ -40,4 +45,12 @@ func (c converter) Translate() (string, error) {
 		return "", errors.Errorf("Only support 1 statement translating")
 	}
 	return c.translator.Translate(q.Statements[0])
+}
+
+func (c converter) TranslateWithTimeRange() (string, *influxql.TimeRange, error) {
+	promQL, err := c.Translate()
+	if err != nil {
+		return "", nil, errors.Wrap(err, "Translate")
+	}
+	return promQL, c.translator.GetTimeRange(), nil
 }
