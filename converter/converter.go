@@ -24,7 +24,7 @@ func Translate(influxQL string) (string, error) {
 	return New(strings.NewReader(influxQL)).Translate()
 }
 
-func TranslatorWithTimeRange(influxQL string) (string, *influxql.TimeRange, error) {
+func TranslateWithTimeRange(influxQL string) (string, *influxql.TimeRange, error) {
 	return New(strings.NewReader(influxQL)).TranslateWithTimeRange()
 }
 
