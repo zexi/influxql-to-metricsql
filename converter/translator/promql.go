@@ -38,7 +38,7 @@ func (m *promQL) translate(s *influxql.SelectStatement) (string, error) {
 	if err != nil {
 		return "", errors.Wrap(err, "getMetricName")
 	}
-	aggrOp, err := getAggrOperator(s.Fields)
+	aggrOps, err := getAggrOperators(s.Fields)
 	if err != nil {
 		return "", errors.Wrap(err, "get aggregate operator")
 	}
@@ -66,7 +66,7 @@ func (m *promQL) translate(s *influxql.SelectStatement) (string, error) {
 	//}
 	//fmt.Printf("==get interval: %#v\n", interval)
 
-	return m.formatExpression(metricName, matchers, lookbehindWin, aggrOp, groups)
+	return m.formatExpression(metricName, matchers, lookbehindWin, aggrOps, groups)
 }
 
 func getTimeRange(cond influxql.Expr) (influxql.Expr, *influxql.TimeRange, error) {
@@ -94,12 +94,12 @@ func (m promQL) formatExpression(
 	metricName string,
 	ls []*labels.Matcher,
 	lookbehindWindow string,
-	aggrOp string,
+	aggrOps []string,
 	groups []string) (string, error) {
 	//fmt.Printf("=====name: %s, labels: %#v, lookbehindWindow: %q, aggrOp: %q, groups: %#v\n", metricName, ls, lookbehindWindow, aggrOp, groups)
 
 	var result promql.Expr
-	if aggrOp != "" {
+	if len(aggrOps) != 0 {
 		if lookbehindWindow == "" {
 			lookbehindWindow = "1m"
 		}
@@ -121,36 +121,11 @@ func (m promQL) formatExpression(
 		result = vs
 	}
 
-	if len(groups) != 0 && len(aggrOp) == 0 {
+	if len(groups) != 0 && len(aggrOps) == 0 {
 		return "", errors.Errorf("Can't use group by when aggregate operator is empty")
 	}
 
-	switch aggrOp {
-	case "mean":
-		// https://docs.victoriametrics.com/MetricsQL.html#avg_over_time
-		expr := &promql.Call{
-			Func: &promql.Function{
-				Name:       "avg_over_time",
-				ArgTypes:   []promql.ValueType{promql.ValueTypeMatrix},
-				Variadic:   0,
-				ReturnType: promql.ValueTypeVector,
-			},
-			Args: promql.Expressions{result},
-		}
-		result = expr
-	case "last":
-		// https://docs.victoriametrics.com/MetricsQL.html#last_over_time
-		expr := &promql.Call{
-			Func: &promql.Function{
-				Name:       "last_over_time",
-				ArgTypes:   []promql.ValueType{promql.ValueTypeMatrix},
-				Variadic:   0,
-				ReturnType: promql.ValueTypeVector,
-			},
-			Args: promql.Expressions{result},
-		}
-		result = expr
-	}
+	result = getAggrExpr(aggrOps, result)
 
 	//fmt.Printf("=====m.GroupByWildcard: %v, %#v\n", m.groupByWildcard, result)
 
@@ -168,16 +143,77 @@ func (m promQL) formatExpression(
 	return result.String(), nil
 }
 
-func getAggrOperator(fields influxql.Fields) (string, error) {
+func getAggrExpr(ops []string, expr promql.Expr) promql.Expr {
+	if len(ops) == 0 {
+		return expr
+	}
+	aggrOp := ops[0]
+	restOps := ops[1:]
+	restExpr := getAggrExpr(restOps, expr)
+	switch aggrOp {
+	case "abs":
+		expr = &promql.Call{
+			Func: &promql.Function{
+				Name:       "abs",
+				ArgTypes:   []promql.ValueType{promql.ValueTypeVector},
+				Variadic:   0,
+				ReturnType: promql.ValueTypeVector,
+			},
+			Args: promql.Expressions{restExpr},
+		}
+	case "mean":
+		// https://docs.victoriametrics.com/MetricsQL.html#avg_over_time
+		expr = &promql.Call{
+			Func: &promql.Function{
+				Name:       "avg_over_time",
+				ArgTypes:   []promql.ValueType{promql.ValueTypeMatrix},
+				Variadic:   0,
+				ReturnType: promql.ValueTypeVector,
+			},
+			Args: promql.Expressions{restExpr},
+		}
+	case "last":
+		// https://docs.victoriametrics.com/MetricsQL.html#last_over_time
+		expr = &promql.Call{
+			Func: &promql.Function{
+				Name:       "last_over_time",
+				ArgTypes:   []promql.ValueType{promql.ValueTypeMatrix},
+				Variadic:   0,
+				ReturnType: promql.ValueTypeVector,
+			},
+			Args: promql.Expressions{restExpr},
+		}
+	}
+	return expr
+}
+
+func getAggrOperator(op *influxql.Call) ([]string, error) {
+	if len(op.Args) != 1 {
+		return nil, errors.Errorf("not supported operator: %s with args: %#v", op.String(), op.Args)
+	}
+	ret := []string{op.Name}
+	args, ok := op.Args[0].(*influxql.Call)
+	if !ok {
+		return ret, nil
+	}
+	rest, err := getAggrOperator(args)
+	if err != nil {
+		return nil, errors.Wrapf(err, "get rest aggregate operator: %s", args.String())
+	}
+	ret = append(ret, rest...)
+	return ret, nil
+}
+
+func getAggrOperators(fields influxql.Fields) ([]string, error) {
 	if len(fields) != 1 {
-		return "", errors.Errorf("fields %#v length doesn't equal 1", fields)
+		return nil, errors.Errorf("fields %#v length doesn't equal 1", fields)
 	}
 	field := fields[0]
 	aggrOp, ok := field.Expr.(*influxql.Call)
 	if !ok {
-		return "", nil
+		return nil, nil
 	}
-	return aggrOp.Name, nil
+	return getAggrOperator(aggrOp)
 }
 
 func getMetricName(sources influxql.Sources, fields influxql.Fields) (string, error) {
@@ -218,6 +254,8 @@ func getCallVariable(c *influxql.Call) (string, error) {
 	switch args := c.Args[0].(type) {
 	case *influxql.VarRef:
 		return args.Val, nil
+	case *influxql.Call:
+		return getCallVariable(args)
 	default:
 		return "", errors.Errorf("unsupported args %#v", args)
 	}
