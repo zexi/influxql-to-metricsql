@@ -158,6 +158,10 @@ func Test_metricsQL_Translate(t *testing.T) {
 			sql:  `SELECT abs(mean("bps_recv")) FROM "vm_netio" WHERE "project_domain" != '' AND time > now() - 10080m GROUP BY "vm_name", "vm_id", time(7d) fill(none)`,
 			want: `avg by(vm_name, vm_id) (abs(avg_over_time(vm_netio_bps_recv{project_domain!=""}[1w])))`,
 		},
+		{
+			sql:  `SELECT last(*) FROM mem WHERE time > now() - 1h`,
+			want: `last_over_time({__name__=~"^mem_.*"}[1m])`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.sql, func(t *testing.T) {

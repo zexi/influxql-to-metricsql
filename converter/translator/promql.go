@@ -15,6 +15,8 @@ import (
 type promQL struct {
 	groupByWildcard bool
 	timeRange       *influxql.TimeRange
+	fieldIsWildcard bool
+	measurement     string
 }
 
 func NewPromQL() Translator {
@@ -36,8 +38,14 @@ func (m *promQL) GetTimeRange() *influxql.TimeRange {
 func (m *promQL) translate(s *influxql.SelectStatement) (string, error) {
 	metricName, err := getMetricName(s.Sources, s.Fields)
 	if err != nil {
-		return "", errors.Wrap(err, "getMetricName")
+		if errors.Cause(err) == ErrVariableIsWildcard {
+			m.measurement = metricName
+			m.fieldIsWildcard = true
+		} else {
+			return "", errors.Wrap(err, "getMetricName")
+		}
 	}
+
 	aggrOps, err := getAggrOperators(s.Fields)
 	if err != nil {
 		return "", errors.Wrap(err, "get aggregate operator")
@@ -53,8 +61,10 @@ func (m *promQL) translate(s *influxql.SelectStatement) (string, error) {
 	if err != nil {
 		return "", errors.Wrap(err, "get matchers")
 	}
-	nameMatcher, _ := labels.NewMatcher(labels.MatchEqual, labels.MetricName, metricName)
-	matchers = append(matchers, nameMatcher)
+	if !m.fieldIsWildcard {
+		nameMatcher, _ := labels.NewMatcher(labels.MatchEqual, labels.MetricName, metricName)
+		matchers = append(matchers, nameMatcher)
+	}
 
 	lookbehindWin, groups, err := m.getGroups(s.Dimensions)
 	if err != nil {
@@ -98,6 +108,11 @@ func (m promQL) formatExpression(
 	groups []string) (string, error) {
 	//fmt.Printf("=====name: %s, labels: %#v, lookbehindWindow: %q, aggrOp: %q, groups: %#v\n", metricName, ls, lookbehindWindow, aggrOp, groups)
 
+	if m.fieldIsWildcard {
+		measurementM, _ := labels.NewMatcher(labels.MatchRegexp, labels.MetricName, fmt.Sprintf("^%s_.*", m.measurement))
+		ls = append(ls, measurementM)
+	}
+
 	var result promql.Expr
 	if len(aggrOps) != 0 {
 		if lookbehindWindow == "" {
@@ -108,15 +123,19 @@ func (m promQL) formatExpression(
 			return "", errors.Wrapf(err, "ParseDuration: %q", lookbehindWindow)
 		}
 		ms := &promql.MatrixSelector{
-			Name:          metricName,
 			LabelMatchers: ls,
 			Range:         time.Duration(dur),
+		}
+		if !m.fieldIsWildcard {
+			ms.Name = metricName
 		}
 		result = ms
 	} else {
 		vs := &promql.VectorSelector{
-			Name:          metricName,
 			LabelMatchers: ls,
+		}
+		if !m.fieldIsWildcard {
+			vs.Name = metricName
 		}
 		result = vs
 	}
@@ -244,8 +263,16 @@ func getMetricName(sources influxql.Sources, fields influxql.Fields) (string, er
 		return "", errors.Errorf("field.Expr %#v is not supported", expr)
 	}
 
-	return fmt.Sprintf("%s_%s", measurement.Name, fieldName), err
+	if err != nil {
+		return measurement.Name, err
+	}
+
+	return fmt.Sprintf("%s_%s", measurement.Name, fieldName), nil
 }
+
+var (
+	ErrVariableIsWildcard = errors.New("variable field is wildcard")
+)
 
 func getCallVariable(c *influxql.Call) (string, error) {
 	if len(c.Args) != 1 {
@@ -254,6 +281,8 @@ func getCallVariable(c *influxql.Call) (string, error) {
 	switch args := c.Args[0].(type) {
 	case *influxql.VarRef:
 		return args.Val, nil
+	case *influxql.Wildcard:
+		return "", ErrVariableIsWildcard
 	case *influxql.Call:
 		return getCallVariable(args)
 	default:
