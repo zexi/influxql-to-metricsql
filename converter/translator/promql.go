@@ -54,7 +54,6 @@ func (m *promQL) translate(s *influxql.SelectStatement) (string, error) {
 	if err != nil {
 		return "", errors.Wrap(err, "getTimeRange")
 	}
-	//fmt.Printf("=====get time range: %s\n", timeRange)
 	m.timeRange = timeRange
 
 	matchers, err := m.getLabels(cond)
@@ -89,13 +88,24 @@ func getTimeRange(cond influxql.Expr) (influxql.Expr, *influxql.TimeRange, error
 	//	return ts
 	//}
 	//now := mustParseTime("2000-01-01T00:00:00Z")
-	valuer := influxql.NowValuer{Now: time.Now()}
+	valuer := influxql.NowValuer{
+		Now:      time.Now(),
+		Location: time.UTC,
+	}
 	cond, timeRange, err := influxql.ConditionExpr(cond, &valuer)
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "parse time range from %q", cond)
 	}
 	if timeRange.IsZero() {
 		return cond, nil, nil
+	}
+	// process maxTime
+	if !timeRange.MaxTime().IsZero() {
+		year, month, day := timeRange.Max.Date()
+		// FIX: time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC)
+		if year == 1 && month == 1 && day == 1 {
+			timeRange.Max = time.Now()
+		}
 	}
 	return cond, &timeRange, nil
 }
