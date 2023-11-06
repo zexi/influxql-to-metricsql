@@ -150,6 +150,11 @@ func Test_metricsQL_Translate(t *testing.T) {
 			want:    `last_over_time(system_uptime[1m])`,
 			wantErr: false,
 		},
+		//{
+		//	sql:     `SELECT last("exit_status") FROM "smart_device" WHERE "health_ok" = false AND time > now() - 1h GROUP BY *`,
+		//	want:    `last_over_time(exit_status{health_ok=false}[1m])`,
+		//	wantErr: false,
+		//},
 		{
 			sql:  `SELECT mean("usage_active") FROM "cpu" WHERE "res_type" = 'host' AND time > now() - 1h GROUP BY "host_id"`,
 			want: `avg by(host_id) (avg_over_time(cpu_usage_active{res_type="host"}[1m]))`,
@@ -161,6 +166,10 @@ func Test_metricsQL_Translate(t *testing.T) {
 		{
 			sql:  `SELECT last(*) FROM mem WHERE time > now() - 1h`,
 			want: `last_over_time({__name__=~"^mem_.*"}[1m])`,
+		},
+		{
+			sql:  `SELECT count("usage_active") FROM "vm_cpu" WHERE ("db" = 'telegraf' AND "host" = 'test-69-onecloud01-10-127-100-2') AND time > now() - 1h GROUP BY *, time(2m) fill(none)`,
+			want: `count(vm_cpu_usage_active{db="telegraf",host="test-69-onecloud01-10-127-100-2"}[2m])`,
 		},
 	}
 	for _, tt := range tests {

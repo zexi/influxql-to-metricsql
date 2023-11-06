@@ -116,7 +116,10 @@ func (m promQL) formatExpression(
 	lookbehindWindow string,
 	aggrOps []string,
 	groups []string) (string, error) {
-	//fmt.Printf("=====name: %s, labels: %#v, lookbehindWindow: %q, aggrOp: %q, groups: %#v\n", metricName, ls, lookbehindWindow, aggrOp, groups)
+	//fmt.Printf("=====name: %s, labels: %#v, lookbehindWindow: %q, aggrOps: %#v, groups: %#v\n", metricName, ls, lookbehindWindow, aggrOps, groups)
+	for _, l := range ls {
+		fmt.Printf("label: %s\n", l.String())
+	}
 
 	if m.fieldIsWildcard {
 		measurementM, _ := labels.NewMatcher(labels.MatchRegexp, labels.MetricName, fmt.Sprintf("^%s_.*", m.measurement))
@@ -172,6 +175,18 @@ func (m promQL) formatExpression(
 	return result.String(), nil
 }
 
+func newAggrExpr(name string, argType promql.ValueType, returnType promql.ValueType, restExpr promql.Expr) promql.Expr {
+	return &promql.Call{
+		Func: &promql.Function{
+			Name:       name,
+			ArgTypes:   []promql.ValueType{argType},
+			Variadic:   0,
+			ReturnType: returnType,
+		},
+		Args: promql.Expressions{restExpr},
+	}
+}
+
 func getAggrExpr(ops []string, expr promql.Expr) promql.Expr {
 	if len(ops) == 0 {
 		return expr
@@ -181,37 +196,39 @@ func getAggrExpr(ops []string, expr promql.Expr) promql.Expr {
 	restExpr := getAggrExpr(restOps, expr)
 	switch aggrOp {
 	case "abs":
-		expr = &promql.Call{
-			Func: &promql.Function{
-				Name:       "abs",
-				ArgTypes:   []promql.ValueType{promql.ValueTypeVector},
-				Variadic:   0,
-				ReturnType: promql.ValueTypeVector,
-			},
-			Args: promql.Expressions{restExpr},
-		}
+		// https://prometheus.io/docs/prometheus/latest/querying/functions/#abs
+		expr = newAggrExpr("abs", promql.ValueTypeVector, promql.ValueTypeVector, restExpr)
+	case "sum":
+		expr = newAggrExpr("sum", promql.ValueTypeVector, promql.ValueTypeVector, restExpr)
 	case "mean":
 		// https://docs.victoriametrics.com/MetricsQL.html#avg_over_time
-		expr = &promql.Call{
-			Func: &promql.Function{
-				Name:       "avg_over_time",
-				ArgTypes:   []promql.ValueType{promql.ValueTypeMatrix},
-				Variadic:   0,
-				ReturnType: promql.ValueTypeVector,
-			},
-			Args: promql.Expressions{restExpr},
-		}
+		expr = newAggrExpr("avg_over_time", promql.ValueTypeMatrix, promql.ValueTypeVector, restExpr)
 	case "last":
 		// https://docs.victoriametrics.com/MetricsQL.html#last_over_time
-		expr = &promql.Call{
-			Func: &promql.Function{
-				Name:       "last_over_time",
-				ArgTypes:   []promql.ValueType{promql.ValueTypeMatrix},
-				Variadic:   0,
-				ReturnType: promql.ValueTypeVector,
-			},
-			Args: promql.Expressions{restExpr},
-		}
+		expr = newAggrExpr("last_over_time", promql.ValueTypeMatrix, promql.ValueTypeVector, restExpr)
+	case "count":
+		// use count, not use 'count_over_time' https://docs.victoriametrics.com/MetricsQL.html#count_over_time
+		expr = newAggrExpr("count", promql.ValueTypeMatrix, promql.ValueTypeVector, restExpr)
+	case "stddev":
+		// https://prometheus.io/docs/prometheus/latest/querying/functions/#aggregation_over_time
+		expr = newAggrExpr("stddev_over_time", promql.ValueTypeMatrix, promql.ValueTypeVector, restExpr)
+	case "median":
+		// https://docs.victoriametrics.com/MetricsQL.html#median_over_time
+		expr = newAggrExpr("median_over_time", promql.ValueTypeMatrix, promql.ValueTypeVector, restExpr)
+	case "max":
+		// https://docs.victoriametrics.com/MetricsQL.html#max_over_time
+		expr = newAggrExpr("max_over_time", promql.ValueTypeMatrix, promql.ValueTypeVector, restExpr)
+	case "min":
+		// https://docs.victoriametrics.com/MetricsQL.html#min_over_time
+		expr = newAggrExpr("min_over_time", promql.ValueTypeMatrix, promql.ValueTypeVector, restExpr)
+	case "mode":
+		// https://docs.victoriametrics.com/MetricsQL.html#mode_over_time
+		expr = newAggrExpr("mode_over_time", promql.ValueTypeMatrix, promql.ValueTypeVector, restExpr)
+	case "integral":
+		// https://docs.victoriametrics.com/MetricsQL.html#integrate
+		expr = newAggrExpr("integrate", promql.ValueTypeMatrix, promql.ValueTypeVector, restExpr)
+	case "distinct":
+		expr = newAggrExpr("distinct", promql.ValueTypeMatrix, promql.ValueTypeVector, restExpr)
 	}
 	return expr
 }
