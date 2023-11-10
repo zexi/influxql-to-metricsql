@@ -43,7 +43,7 @@ func Test_metricsQL_getMetricName(t *testing.T) {
 				t.Errorf("can't cast %#v to *influxql.SelectStatement", q)
 				return
 			}
-			got, err := getMetricName(sq.Sources, sq.Fields)
+			got, err := getMetricName(sq.Sources, sq.Fields[0])
 			if (err != nil) != tt.wantErr {
 				t.Errorf("getMetricName() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -170,6 +170,10 @@ func Test_metricsQL_Translate(t *testing.T) {
 		{
 			sql:  `SELECT count("usage_active") FROM "vm_cpu" WHERE ("db" = 'telegraf' AND "host" = 'test-69-onecloud01-10-127-100-2') AND time > now() - 1h GROUP BY *, time(2m) fill(none)`,
 			want: `count(vm_cpu_usage_active{db="telegraf",host="test-69-onecloud01-10-127-100-2"}[2m])`,
+		},
+		{
+			sql:  `SELECT sum("free"), sum("used"), sum("total") FROM "disk" WHERE time > now() - 720h GROUP BY fill(none)`,
+			want: `union(label_set(sum(disk_free[1m]), "__union_result__", "sum_disk_free"), label_set(sum(disk_used[1m]), "__union_result__", "sum_disk_used"), label_set(sum(disk_total[1m]), "__union_result__", "sum_disk_total"))`,
 		},
 	}
 	for _, tt := range tests {

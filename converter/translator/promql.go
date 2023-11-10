@@ -3,6 +3,7 @@ package translator
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/influxdata/influxql"
@@ -11,6 +12,8 @@ import (
 	"github.com/pkg/errors"
 	"github.com/prometheus/common/model"
 )
+
+const UNION_RESULT_NAME = "__union_result__"
 
 type promQL struct {
 	groupByWildcard bool
@@ -35,30 +38,44 @@ func (m *promQL) GetTimeRange() *influxql.TimeRange {
 	return m.timeRange
 }
 
-func (m *promQL) translate(s *influxql.SelectStatement) (string, error) {
-	metricName, err := getMetricName(s.Sources, s.Fields)
+type fieldResult struct {
+	metricName string
+	aggrOps    []string
+	expr       promql.Expr
+}
+
+func newFieldResult(metricName string, ops []string, expr promql.Expr) *fieldResult {
+	return &fieldResult{
+		metricName: metricName,
+		aggrOps:    ops,
+		expr:       expr,
+	}
+}
+
+func (m *promQL) translateField(s *influxql.SelectStatement, field *influxql.Field) (*fieldResult, error) {
+	metricName, err := getMetricName(s.Sources, field)
 	if err != nil {
 		if errors.Cause(err) == ErrVariableIsWildcard {
 			m.measurement = metricName
 			m.fieldIsWildcard = true
 		} else {
-			return "", errors.Wrap(err, "getMetricName")
+			return nil, errors.Wrap(err, "getMetricName")
 		}
 	}
 
-	aggrOps, err := getAggrOperators(s.Fields)
+	aggrOps, err := getAggrOperators(field)
 	if err != nil {
-		return "", errors.Wrap(err, "get aggregate operator")
+		return nil, errors.Wrap(err, "get field aggregate operator")
 	}
 	cond, timeRange, err := getTimeRange(s.Condition)
 	if err != nil {
-		return "", errors.Wrap(err, "getTimeRange")
+		return nil, errors.Wrap(err, "getTimeRange")
 	}
 	m.timeRange = timeRange
 
 	matchers, err := m.getLabels(cond)
 	if err != nil {
-		return "", errors.Wrap(err, "get matchers")
+		return nil, errors.Wrap(err, "get matchers")
 	}
 	if !m.fieldIsWildcard {
 		nameMatcher, _ := labels.NewMatcher(labels.MatchEqual, labels.MetricName, metricName)
@@ -67,7 +84,7 @@ func (m *promQL) translate(s *influxql.SelectStatement) (string, error) {
 
 	lookbehindWin, groups, err := m.getGroups(s.Dimensions)
 	if err != nil {
-		return "", errors.Wrap(err, "get groups")
+		return nil, errors.Wrap(err, "get groups")
 	}
 	//interval, err := s.GroupByInterval()
 	//if err != nil {
@@ -75,7 +92,67 @@ func (m *promQL) translate(s *influxql.SelectStatement) (string, error) {
 	//}
 	//fmt.Printf("==get interval: %#v\n", interval)
 
-	return m.formatExpression(metricName, matchers, lookbehindWin, aggrOps, groups)
+	expr, err := m.generateExpr(metricName, matchers, lookbehindWin, aggrOps, groups)
+	if err != nil {
+		return nil, errors.Wrap(err, "generate expression")
+	}
+	return newFieldResult(metricName, aggrOps, expr), nil
+}
+
+func (m *promQL) translate(s *influxql.SelectStatement) (string, error) {
+	exprs := make([]*fieldResult, 0)
+	var resultExpr promql.Expr
+	for _, field := range s.Fields {
+		expr, err := m.translateField(s, field)
+		if err != nil {
+			return "", errors.Wrapf(err, "translate field %s", field)
+		}
+		exprs = append(exprs, expr)
+	}
+
+	if len(exprs) == 1 {
+		resultExpr = exprs[0].expr
+	} else {
+		// union field expr
+		resultExpr = unionFieldsExpr(exprs)
+	}
+
+	return m.formatExpr(resultExpr), nil
+}
+
+func unionFieldsExpr(exprs []*fieldResult) promql.Expr {
+	result := make([]promql.Expr, len(exprs))
+	// 1. wrap each expr with label_set: https://docs.victoriametrics.com/MetricsQL.html#label_set
+	setKey := UNION_RESULT_NAME
+	for i := range exprs {
+		expr := exprs[i]
+		setValue := expr.metricName
+		if len(expr.aggrOps) > 0 {
+			setValue = fmt.Sprintf("%s_%s", strings.Join(expr.aggrOps, "_"), expr.metricName)
+		}
+		result[i] = &promql.Call{
+			Func: &promql.Function{
+				Name:       "label_set",
+				ArgTypes:   []promql.ValueType{promql.ValueTypeVector, promql.ValueTypeString, promql.ValueTypeString},
+				Variadic:   1,
+				ReturnType: promql.ValueTypeVector,
+			},
+			Args: promql.Expressions{
+				expr.expr,
+				&promql.StringLiteral{setKey},
+				&promql.StringLiteral{setValue},
+			},
+		}
+	}
+	// 2. use union: https://docs.victoriametrics.com/MetricsQL.html#union
+	return &promql.Call{
+		Func: &promql.Function{
+			Name:       "union",
+			Variadic:   1,
+			ReturnType: promql.ValueTypeVector,
+		},
+		Args: result,
+	}
 }
 
 func getTimeRange(cond influxql.Expr) (influxql.Expr, *influxql.TimeRange, error) {
@@ -110,12 +187,12 @@ func getTimeRange(cond influxql.Expr) (influxql.Expr, *influxql.TimeRange, error
 	return cond, &timeRange, nil
 }
 
-func (m promQL) formatExpression(
+func (m promQL) generateExpr(
 	metricName string,
 	ls []*labels.Matcher,
 	lookbehindWindow string,
 	aggrOps []string,
-	groups []string) (string, error) {
+	groups []string) (promql.Expr, error) {
 	//fmt.Printf("=====name: %s, labels: %#v, lookbehindWindow: %q, aggrOps: %#v, groups: %#v\n", metricName, ls, lookbehindWindow, aggrOps, groups)
 	for _, l := range ls {
 		fmt.Printf("label: %s\n", l.String())
@@ -133,7 +210,7 @@ func (m promQL) formatExpression(
 		}
 		dur, err := model.ParseDuration(lookbehindWindow)
 		if err != nil {
-			return "", errors.Wrapf(err, "ParseDuration: %q", lookbehindWindow)
+			return nil, errors.Wrapf(err, "ParseDuration: %q", lookbehindWindow)
 		}
 		ms := &promql.MatrixSelector{
 			LabelMatchers: ls,
@@ -154,7 +231,7 @@ func (m promQL) formatExpression(
 	}
 
 	if len(groups) != 0 && len(aggrOps) == 0 {
-		return "", errors.Errorf("Can't use group by when aggregate operator is empty")
+		return nil, errors.Errorf("Can't use group by when aggregate operator is empty")
 	}
 
 	result = getAggrExpr(aggrOps, result)
@@ -171,8 +248,11 @@ func (m promQL) formatExpression(
 		}
 		result = expr
 	}
+	return result, nil
+}
 
-	return result.String(), nil
+func (m promQL) formatExpr(expr promql.Expr) string {
+	return expr.String()
 }
 
 func newAggrExpr(name string, argType promql.ValueType, returnType promql.ValueType, restExpr promql.Expr) promql.Expr {
@@ -250,11 +330,7 @@ func getAggrOperator(op *influxql.Call) ([]string, error) {
 	return ret, nil
 }
 
-func getAggrOperators(fields influxql.Fields) ([]string, error) {
-	if len(fields) != 1 {
-		return nil, errors.Errorf("fields %#v length doesn't equal 1", fields)
-	}
-	field := fields[0]
+func getAggrOperators(field *influxql.Field) ([]string, error) {
 	aggrOp, ok := field.Expr.(*influxql.Call)
 	if !ok {
 		return nil, nil
@@ -262,15 +338,11 @@ func getAggrOperators(fields influxql.Fields) ([]string, error) {
 	return getAggrOperator(aggrOp)
 }
 
-func getMetricName(sources influxql.Sources, fields influxql.Fields) (string, error) {
+func getMetricName(sources influxql.Sources, field *influxql.Field) (string, error) {
 	if len(sources) != 1 {
 		return "", errors.Errorf("sources %#v length doesn't equal 1", sources)
 	}
-	if len(fields) != 1 {
-		return "", errors.Errorf("fields %#v length doesn't equal 1", fields)
-	}
 	src := sources[0]
-	field := fields[0]
 	measurement, ok := src.(*influxql.Measurement)
 	if !ok {
 		return "", errors.Errorf("source %#v is not measurement type", src)
