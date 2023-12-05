@@ -175,6 +175,14 @@ func Test_metricsQL_Translate(t *testing.T) {
 			sql:  `SELECT sum("free"), sum("used"), sum("total") FROM "disk" WHERE time > now() - 720h GROUP BY fill(none)`,
 			want: `union(label_set(sum(disk_free[1m]), "__union_result__", "sum_disk_free"), label_set(sum(disk_used[1m]), "__union_result__", "sum_disk_used"), label_set(sum(disk_total[1m]), "__union_result__", "sum_disk_total"))`,
 		},
+		{
+			sql:  `SELECT top("usage_active", "vm_name", "vm_id", 5) FROM "vm_cpu" WHERE ("project_domain" != '' AND "project_tags.0.0.key" = 'user:L2.1')`,
+			want: `topk_avg(5, vm_cpu_usage_active{project_domain!="",project_tags.0.0.key="user:L2.1"}[1m])`,
+		},
+		//{
+		//	sql:  `SELECT top("usage_active", "vm_name", "vm_id", 5) FROM "vm_cpu" WHERE ("project_domain" != '' OR "project_tags.0.0.key" = 'user:L2.1')`,
+		//	want: `topk_avg(5, vm_cpu_usage_active{project_domain!="",project_tags.0.0.key="user:L2.1"}[1m])`,
+		//},
 	}
 	for _, tt := range tests {
 		t.Run(tt.sql, func(t *testing.T) {

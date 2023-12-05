@@ -1,4 +1,4 @@
-module github.com/zexi/influxql-to-promql
+module github.com/zexi/influxql-to-metricsql
 
 go 1.18
 
