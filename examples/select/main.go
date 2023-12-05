@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/zexi/influxql-to-promql/converter"
+	"github.com/zexi/influxql-to-metricsql/converter"
 )
 
 func main() {
