@@ -179,6 +179,10 @@ func Test_metricsQL_Translate(t *testing.T) {
 			sql:  `SELECT top("usage_active", "vm_name", "vm_id", 5) FROM "vm_cpu" WHERE ("project_domain" != '' AND "project_tags.0.0.key" = 'user:L2.1')`,
 			want: `topk_avg(5, vm_cpu_usage_active{project_domain!="",project_tags.0.0.key="user:L2.1"}[1m])`,
 		},
+		{
+			sql:  `SELECT percentile("bps_recv", 95) FROM "vm_netio" WHERE "vm_id" = 'cdc9df53-7175-42b4-8ea9-04139d18825a' AND time > now() - 10080m GROUP BY time(7d)`,
+			want: `quantile_over_time(0.95, vm_netio_bps_recv{vm_id="cdc9df53-7175-42b4-8ea9-04139d18825a"}[1w])`,
+		},
 		//{
 		//	sql:  `SELECT top("usage_active", "vm_name", "vm_id", 5) FROM "vm_cpu" WHERE ("project_domain" != '' OR "project_tags.0.0.key" = 'user:L2.1')`,
 		//	want: `topk_avg(5, vm_cpu_usage_active{project_domain!="",project_tags.0.0.key="user:L2.1"}[1m])`,
