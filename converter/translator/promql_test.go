@@ -97,9 +97,11 @@ func TestLabelsVisitor_Visit(t *testing.T) {
 			},
 		},
 		{
-			expr:    `hostname = 'office01' or region =~ /uswest.*/`,
-			want:    nil,
-			wantErr: true,
+			expr: `hostname = 'office01' or region =~ /uswest.*/`,
+			want: []*labels.Matcher{
+				nMatcher(labels.MatchEqual, "hostname", "office01"),
+				nMatcher(labels.MatchRegexp, "region", "uswest.*"),
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -138,6 +140,21 @@ func Test_metricsQL_Translate(t *testing.T) {
 		{
 			sql:     `SELECT free FROM "disk" WHERE host = 'ceph-04-192-168-222-114' AND path = '/opt/cloud'`,
 			want:    `disk_free{host="ceph-04-192-168-222-114",path="/opt/cloud"}`,
+			wantErr: false,
+		},
+		{
+			sql:     `SELECT free FROM "disk" WHERE host = 'ceph-04-192-168-222-114' OR path = '/opt/cloud' OR tname = 'test' OR tname2 = 'test2'`,
+			want:    `disk_free{host="ceph-04-192-168-222-114" or path="/opt/cloud" or tname="test" or tname2="test2"}`,
+			wantErr: false,
+		},
+		{
+			sql:     `SELECT free FROM "disk" WHERE host = 'ceph-04-192-168-222-114' OR path = '/opt/cloud' OR tname = 'test' and tname2 = 'test2'`,
+			want:    `disk_free{host="ceph-04-192-168-222-114" or path="/opt/cloud" or tname="test",tname2="test2"}`,
+			wantErr: false,
+		},
+		{
+			sql:     `SELECT free FROM "disk" WHERE host = 'ceph-04-192-168-222-114' AND path = '/opt/cloud' OR tname = 'test'`,
+			want:    `disk_free{host="ceph-04-192-168-222-114",path="/opt/cloud" or tname="test"}`,
 			wantErr: false,
 		},
 		{
