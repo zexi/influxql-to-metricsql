@@ -193,6 +193,10 @@ func Test_metricsQL_Translate(t *testing.T) {
 			want: `sum by(host) (vm_netio_bps_recv{db="telegraf"}[2m])`,
 		},
 		{
+			sql:  `SELECT min("bps_recv") FROM "vm_netio" WHERE "db" = 'telegraf' AND time > now() - 1h GROUP BY "host", time(2m) fill(none)`,
+			want: `min by(host) (vm_netio_bps_recv{db="telegraf"}[2m])`,
+		},
+		{
 			sql:  `SELECT sum("free"), sum("used"), sum("total") FROM "disk" WHERE time > now() - 720h GROUP BY fill(none)`,
 			want: `union(label_set(sum(disk_free[1m]), "__union_result__", "sum_disk_free"), label_set(sum(disk_used[1m]), "__union_result__", "sum_disk_used"), label_set(sum(disk_total[1m]), "__union_result__", "sum_disk_total"))`,
 		},
