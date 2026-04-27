@@ -163,6 +163,11 @@ func Test_metricsQL_Translate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			sql:     `SELECT mean("in") FROM "swap" WHERE host =~ /$hostname$/ GROUP BY time(2d), *`,
+			want:    `avg_over_time(swap_in{host=~"$hostname$"}[2d])`,
+			wantErr: false,
+		},
+		{
 			sql:     `SELECT last("uptime") FROM "system" WHERE time > now() - 3m GROUP BY *, time(1m) fill(none)`,
 			want:    `last_over_time(system_uptime[1m])`,
 			wantErr: false,
